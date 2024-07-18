@@ -393,7 +393,7 @@ func BuildMintingInfo(
 	dAppKeys []*btcec.PublicKey,
 	covenantKeys []*btcec.PublicKey,
 	covenantQuorum uint32,
-	stakingAmount btcutil.Amount,
+	amount btcutil.Amount,
 	net *chaincfg.Params,
 ) (*MintingInfo, error) {
 	unspendableKeyPathKey := unspendableKeyPathInternalPubKey()
@@ -433,7 +433,7 @@ func BuildMintingInfo(
 		return nil, fmt.Errorf("%s: %w", errBuildingMintingInfo, err)
 	}
 
-	mintingOutput := wire.NewTxOut(int64(stakingAmount), taprootPkScript)
+	mintingOutput := wire.NewTxOut(int64(amount), taprootPkScript)
 
 	return &MintingInfo{
 		MintingOutput:                 mintingOutput,

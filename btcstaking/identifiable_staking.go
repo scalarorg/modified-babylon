@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	// length of tag prefix indentifying staking transactions
+	// length of tag prefix indentifying minting transactions
 	TagLen = 4
-	// 4 bytes tag + 1 byte version + 32 bytes staker public key + 32 bytes finality provider public key + 2 bytes staking time
+	// 4 bytes tag + 1 byte version + 32 bytes staker public key + 32 bytes finality provider public key + 2 bytes minting time
 	V0OpReturnDataSize = 71
 
 	v0OpReturnCreationErrMsg = "cannot create V0 op_return data"
@@ -30,13 +30,14 @@ const (
 	AmountBytes                      = 32
 )
 
-type IdentifiableStakingInfo struct {
-	StakingOutput         *wire.TxOut
-	scriptHolder          *taprootScriptHolder
-	timeLockPathLeafHash  chainhash.Hash
-	unbondingPathLeafHash chainhash.Hash
-	slashingPathLeafHash  chainhash.Hash
-	OpReturnOutput        *wire.TxOut
+type IdentifiableMintingInfo struct {
+	MintingOutput                 *wire.TxOut
+	scriptHolder                  *taprootScriptHolder
+	burnPathLeafHash              chainhash.Hash
+	slashingOrLostKeyPathLeafHash chainhash.Hash
+	burnWithoutDAppPathLeafHash   chainhash.Hash
+	V0OpReturnOutput              *wire.TxOut
+	PayloadOpReturnOutput         *wire.TxOut
 }
 
 func uint16ToBytes(v uint16) []byte {
@@ -248,90 +249,129 @@ func NewPayloadOpReturnDataFromTxOutput(out *wire.TxOut) (*PayloadOpReturnData, 
 	return NewPayloadOpReturnDataFromBytes(data)
 }
 
-func (d *V0OpReturnData) Marshall() []byte {
+func (d *V0OpReturnData) V0Marshall() []byte {
 	var data []byte
 	data = append(data, d.Tag...)
 	data = append(data, d.Version)
 	data = append(data, d.StakerPublicKey.Marshall()...)
-	data = append(data, d.FinalityProviderPublicKey.Marshall()...)
-	data = append(data, uint16ToBytes(d.StakingTime)...)
+	data = append(data, d.dAppPublicKey.Marshall()...)
 	return data
 }
 
-func (d *V0OpReturnData) ToTxOutput() (*wire.TxOut, error) {
-	dataScript, err := txscript.NullDataScript(d.Marshall())
+func (d *PayloadOpReturnData) PayloadMarshall() []byte {
+	var data []byte
+	data = append(data, d.ChainID...)
+	data = append(data, d.ChainIdUserAddress...)
+	data = append(data, d.ChainIdSmartContractAddress...)
+	amount := make([]byte, 8)
+	binary.BigEndian.PutUint32(amount, d.Amount)
+	data = append(data, amount...)
+	return data
+}
+
+func (d *V0OpReturnData) V0DataToTxOutput() (*wire.TxOut, error) {
+	dataScript, err := txscript.NullDataScript(d.V0Marshall())
 	if err != nil {
 		return nil, err
 	}
 	return wire.NewTxOut(0, dataScript), nil
 }
 
-// BuildV0IdentifiableStakingOutputs creates outputs which every staking transaction must have
-func BuildV0IdentifiableStakingOutputs(
+func (d *PayloadOpReturnData) PayloadDataToTxOutput() (*wire.TxOut, error) {
+	dataScript, err := txscript.NullDataScript(d.PayloadMarshall())
+	if err != nil {
+		return nil, err
+	}
+	return wire.NewTxOut(0, dataScript), nil
+}
+
+// BuildV0IdentifiableMintingOutputs creates outputs which every minting transaction must have
+func BuildV0IdentifiableMintingOutputs(
 	tag []byte,
 	stakerKey *btcec.PublicKey,
-	fpKey *btcec.PublicKey,
+	dAppKey *btcec.PublicKey,
 	covenantKeys []*btcec.PublicKey,
 	covenantQuorum uint32,
-	stakingTime uint16,
-	stakingAmount btcutil.Amount,
+	amount btcutil.Amount,
+	chainID []byte,
+	chainIdUserAddress []byte,
+	chainIdSmartContractAddress []byte,
+	mintingAmount uint32,
 	net *chaincfg.Params,
-) (*IdentifiableStakingInfo, error) {
+) (*IdentifiableMintingInfo, error) {
 	info, err := BuildMintingInfo(
 		stakerKey,
-		[]*btcec.PublicKey{fpKey},
+		[]*btcec.PublicKey{dAppKey},
 		covenantKeys,
 		covenantQuorum,
-		stakingTime,
-		stakingAmount,
+		amount,
 		net,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	opReturnData, err := NewV0OpReturnDataFromParsed(tag, stakerKey, fpKey, stakingTime)
+	V0OpReturnData, err := NewV0OpReturnDataFromParsed(tag, stakerKey, dAppKey)
 
 	if err != nil {
 		return nil, err
 	}
 
-	dataOutput, err := opReturnData.ToTxOutput()
+	V0DataOutput, err := V0OpReturnData.V0DataToTxOutput()
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &IdentifiableStakingInfo{
-		StakingOutput:         info.StakingOutput,
-		scriptHolder:          info.scriptHolder,
-		timeLockPathLeafHash:  info.timeLockPathLeafHash,
-		unbondingPathLeafHash: info.unbondingPathLeafHash,
-		slashingPathLeafHash:  info.slashingPathLeafHash,
-		OpReturnOutput:        dataOutput,
+	PayloadOpReturnData, err := NewPayloadOpReturnDataFromParsed(chainID, chainIdUserAddress, chainIdSmartContractAddress, mintingAmount)
+
+	if err != nil {
+		return nil, err
+	}
+
+	PayloadDataOutput, err := PayloadOpReturnData.PayloadDataToTxOutput()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &IdentifiableMintingInfo{
+		MintingOutput:                 info.MintingOutput,
+		scriptHolder:                  info.scriptHolder,
+		burnPathLeafHash:              info.burnPathLeafHash,
+		slashingOrLostKeyPathLeafHash: info.slashingOrLostKeyPathLeafHash,
+		burnWithoutDAppPathLeafHash:   info.burnWithoutDAppPathLeafHash,
+		V0OpReturnOutput:              V0DataOutput,
+		PayloadOpReturnOutput:         PayloadDataOutput,
 	}, nil
 }
 
-// BuildV0IdentifiableStakingOutputsAndTx creates outputs which every staking transaction must have and
+// BuildV0IdentifiableMintingOutputsAndTx creates outputs which every minting transaction must have and
 // returns the not-funded transaction with these outputs
-func BuildV0IdentifiableStakingOutputsAndTx(
+func BuildV0IdentifiableMintingOutputsAndTx(
 	tag []byte,
 	stakerKey *btcec.PublicKey,
 	fpKey *btcec.PublicKey,
 	covenantKeys []*btcec.PublicKey,
 	covenantQuorum uint32,
-	stakingTime uint16,
-	stakingAmount btcutil.Amount,
+	amount btcutil.Amount,
+	chainID []byte,
+	chainIdUserAddress []byte,
+	chainIdSmartContractAddress []byte,
+	mintingAmount uint32,
 	net *chaincfg.Params,
-) (*IdentifiableStakingInfo, *wire.MsgTx, error) {
-	info, err := BuildV0IdentifiableStakingOutputs(
+) (*IdentifiableMintingInfo, *wire.MsgTx, error) {
+	info, err := BuildV0IdentifiableMintingOutputs(
 		tag,
 		stakerKey,
 		fpKey,
 		covenantKeys,
 		covenantQuorum,
-		stakingTime,
-		stakingAmount,
+		amount,
+		chainID,
+		chainIdUserAddress,
+		chainIdSmartContractAddress,
+		mintingAmount,
 		net,
 	)
 	if err != nil {
@@ -339,29 +379,33 @@ func BuildV0IdentifiableStakingOutputsAndTx(
 	}
 
 	tx := wire.NewMsgTx(2)
-	tx.AddTxOut(info.StakingOutput)
-	tx.AddTxOut(info.OpReturnOutput)
+	tx.AddTxOut(info.MintingOutput)
+	tx.AddTxOut(info.V0OpReturnOutput)
+	tx.AddTxOut(info.PayloadOpReturnOutput)
 	return info, tx, nil
 }
 
-func (i *IdentifiableStakingInfo) TimeLockPathSpendInfo() (*SpendInfo, error) {
-	return i.scriptHolder.scriptSpendInfoByName(i.timeLockPathLeafHash)
+func (i *IdentifiableMintingInfo) BurnPathSpendInfo() (*SpendInfo, error) {
+	return i.scriptHolder.scriptSpendInfoByName(i.burnPathLeafHash)
 }
 
-func (i *IdentifiableStakingInfo) UnbondingPathSpendInfo() (*SpendInfo, error) {
-	return i.scriptHolder.scriptSpendInfoByName(i.unbondingPathLeafHash)
+func (i *IdentifiableMintingInfo) slashingOrLostKeyPathSpendInfo() (*SpendInfo, error) {
+	return i.scriptHolder.scriptSpendInfoByName(i.slashingOrLostKeyPathLeafHash)
 }
 
-func (i *IdentifiableStakingInfo) SlashingPathSpendInfo() (*SpendInfo, error) {
-	return i.scriptHolder.scriptSpendInfoByName(i.slashingPathLeafHash)
+func (i *IdentifiableMintingInfo) burnWithoutDAppPathSpendInfo() (*SpendInfo, error) {
+	return i.scriptHolder.scriptSpendInfoByName(i.burnWithoutDAppPathLeafHash)
 }
 
-type ParsedV0StakingTx struct {
-	StakingOutput     *wire.TxOut
-	StakingOutputIdx  int
-	OpReturnOutput    *wire.TxOut
-	OpReturnOutputIdx int
-	OpReturnData      *V0OpReturnData
+type ParsedV0MintingTx struct {
+	MintingOutput            *wire.TxOut
+	MintingOutputIdx         int
+	V0OpReturnOutput         *wire.TxOut
+	V0OpReturnOutputIdx      int
+	V0OpReturnData           *V0OpReturnData
+	PayloadOpReturnOutput    *wire.TxOut
+	PayloadOpReturnOutputIdx int
+	PayloadOpReturnData      *PayloadOpReturnData
 }
 
 func tryToGetOpReturnDataFromOutputs(outputs []*wire.TxOut) (*V0OpReturnData, int, error) {
@@ -396,45 +440,45 @@ func tryToGetOpReturnDataFromOutputs(outputs []*wire.TxOut) (*V0OpReturnData, in
 	return opReturnData, opReturnOutputIdx, nil
 }
 
-func tryToGetStakingOutput(outputs []*wire.TxOut, stakingOutputPkScript []byte) (*wire.TxOut, int, error) {
+func tryToGetMintingOutput(outputs []*wire.TxOut, mintingOutputPkScript []byte) (*wire.TxOut, int, error) {
 	// lack of outputs is not an error
 	if len(outputs) == 0 {
 		return nil, -1, nil
 	}
 
-	var stakingOutput *wire.TxOut
-	var stakingOutputIdx int
+	var mintingOutput *wire.TxOut
+	var mintingOutputIdx int
 
 	for i, o := range outputs {
 		output := o
 
-		if !bytes.Equal(output.PkScript, stakingOutputPkScript) {
-			// this is not the staking output we are looking for
+		if !bytes.Equal(output.PkScript, mintingOutputPkScript) {
+			// this is not the minting output we are looking for
 			continue
 		}
 
-		if stakingOutput != nil {
-			// we only allow for one staking output per transaction
-			return nil, -1, fmt.Errorf("multiple staking outputs found")
+		if mintingOutput != nil {
+			// we only allow for one minting output per transaction
+			return nil, -1, fmt.Errorf("multiple minting outputs found")
 		}
 
-		stakingOutput = output
-		stakingOutputIdx = i
+		mintingOutput = output
+		mintingOutputIdx = i
 	}
 
-	return stakingOutput, stakingOutputIdx, nil
+	return mintingOutput, mintingOutputIdx, nil
 }
 
-// ParseV0MintingTx takes a btc transaction and checks whether it is a staking transaction and if so parses it
+// ParseV0MintingTx takes a btc transaction and checks whether it is a minting transaction and if so parses it
 // for easy data retrieval.
-// It does all necessary checks to ensure that the transaction is valid staking transaction.
+// It does all necessary checks to ensure that the transaction is valid minting transaction.
 func ParseV0MintingTx(
 	tx *wire.MsgTx,
 	expectedTag []byte,
 	covenantKeys []*btcec.PublicKey,
 	covenantQuorum uint32,
 	net *chaincfg.Params,
-) (*ParsedV0StakingTx, error) {
+) (*ParsedV0MintingTx, error) {
 	// 1. Basic arguments checks
 	if tx == nil {
 		return nil, fmt.Errorf("nil tx")
@@ -454,7 +498,7 @@ func ParseV0MintingTx(
 
 	// 2. Identify whether the transaction has expected shape
 	if len(tx.TxOut) < 3 {
-		return nil, fmt.Errorf("staking tx must have at least 3 outputs")
+		return nil, fmt.Errorf("minting tx must have at least 3 outputs")
 	}
 
 	// opReturnData, opReturnOutputIdx, err := tryToGetOpReturnDataFromOutputs(tx.TxOut)
@@ -463,7 +507,7 @@ func ParseV0MintingTx(
 	PayloadOpReturnData, err := NewPayloadOpReturnDataFromTxOutput(tx.TxOut[2])
 
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse staking transaction: %w", err)
+		return nil, fmt.Errorf("cannot parse minting transaction: %w", err)
 	}
 
 	if V0OpReturnData == nil {
@@ -488,47 +532,47 @@ func ParseV0MintingTx(
 	}
 
 	// 3. Op return seems to be valid V0 op return output. Now, we need to check whether
-	// the staking output exists and is valid.
-	stakingInfo, err := BuildMintingInfo(
+	// the minting output exists and is valid.
+	mintingInfo, err := BuildMintingInfo(
 		V0OpReturnData.StakerPublicKey.PubKey,
 		[]*btcec.PublicKey{V0OpReturnData.dAppPublicKey.PubKey},
 		covenantKeys,
 		covenantQuorum,
-		// we can pass 0 here, as staking amount is not used when creating taproot address
+		// we can pass 0 here, as minting amount is not used when creating taproot address
 		0,
 		net,
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf("cannot build staking info: %w", err)
+		return nil, fmt.Errorf("cannot build minting info: %w", err)
 	}
 
-	stakingOutput, stakingOutputIdx, err := tryToGetStakingOutput(tx.TxOut, stakingInfo.StakingOutput.PkScript)
-
-	if err != nil {
-		return nil, fmt.Errorf("cannot parse staking transaction: %w", err)
+	// mintingOutput, mintingOutputIdx, err := tryToGetMintingOutput(tx.TxOut, mintingInfo.MintingOutput.PkScript)
+	if !bytes.Equal(tx.TxOut[0].PkScript, mintingInfo.MintingOutput.PkScript) {
+		return nil, fmt.Errorf("transaction does not have expected minting output with format at index 0")
 	}
+	mintingOutput := tx.TxOut[0]
+	mintingOutputIdx := 0
 
-	if stakingOutput == nil {
-		return nil, fmt.Errorf("staking output not found in potential staking transaction")
-	}
-
-	return &ParsedV0StakingTx{
-		StakingOutput:     stakingOutput,
-		StakingOutputIdx:  stakingOutputIdx,
-		OpReturnOutput:    tx.TxOut[opReturnOutputIdx],
-		OpReturnOutputIdx: opReturnOutputIdx,
-		OpReturnData:      opReturnData,
+	return &ParsedV0MintingTx{
+		MintingOutput:            mintingOutput,
+		MintingOutputIdx:         mintingOutputIdx,
+		V0OpReturnOutput:         tx.TxOut[1],
+		V0OpReturnOutputIdx:      1,
+		V0OpReturnData:           V0OpReturnData,
+		PayloadOpReturnOutput:    tx.TxOut[2],
+		PayloadOpReturnOutputIdx: 2,
+		PayloadOpReturnData:      PayloadOpReturnData,
 	}, nil
 }
 
-// IsPossibleV0MintingTx checks whether transaction may be a valid staking transaction
+// IsPossibleV0MintingTx checks whether transaction may be a valid minting transaction
 // checks:
 // 1. Whether the transaction has at least 3 outputs
 // 2. have an op return output at index 1,2
-// 3. op_return at index 1 have 69 bytes
+// 3. op_return at index 1 have tag and version
 // 4. op_return at index 2 have 80 bytes
-// This function is much faster than ParseV0StakingTx, as it does not perform
+// This function is much faster than ParseV0MintingTx, as it does not perform
 // all necessary checks.
 func IsPossibleV0MintingTx(tx *wire.MsgTx, expectedTag []byte) bool {
 	if len(expectedTag) != TagLen {
