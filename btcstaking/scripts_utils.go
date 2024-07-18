@@ -33,7 +33,8 @@ func assembleMultiSigScript(
 	if withVerify {
 		builder.AddOp(txscript.OP_NUMEQUALVERIFY)
 	} else {
-		builder.AddOp(txscript.OP_NUMEQUAL)
+		// builder.AddOp(txscript.OP_NUMEQUAL)
+		builder.AddOp(txscript.OP_GREATERTHANOREQUAL)
 	}
 
 	return builder.Script()

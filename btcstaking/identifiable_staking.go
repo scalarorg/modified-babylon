@@ -75,7 +75,7 @@ func NewV0OpReturnData(
 	dAppPublicKey []byte,
 ) (*V0OpReturnData, error) {
 	if len(tag) != TagLen {
-		return nil, fmt.Errorf("%s: invalid tag length: %d, expected: %d", v0OpReturnCreationErrMsg, len(tag), TagLen)
+		return nil, fmt.Errorf("%s:invalid tag length: %d, expected: %d", v0OpReturnCreationErrMsg, len(tag), TagLen)
 	}
 
 	stakerKey, err := XOnlyPublicKeyFromBytes(stakerPublicKey)
@@ -146,6 +146,15 @@ func NewPayloadOpReturnDataFromParsed(
 	chainIdSmartContractAddress []byte,
 	Amount uint32,
 ) (*PayloadOpReturnData, error) {
+	if len(chainID) != chainIdBytes {
+		return nil, fmt.Errorf("invalid chain id length: %d, expected: %d", len(chainID), chainIdBytes)
+	}
+	if len(chainIdUserAddress) != ChainIdUserAddressBytes {
+		return nil, fmt.Errorf("invalid chain id user address length: %d, expected: %d", len(chainIdUserAddress), ChainIdUserAddressBytes)
+	}
+	if len(chainIdSmartContractAddress) != ChainIdSmartContractAddressBytes {
+		return nil, fmt.Errorf("invalid chain id smart contract address length: %d, expected: %d", len(chainIdSmartContractAddress), ChainIdSmartContractAddressBytes)
+	}
 	return &PayloadOpReturnData{
 		ChainID:                     chainID,
 		ChainIdUserAddress:          chainIdUserAddress,
@@ -268,7 +277,7 @@ func BuildV0IdentifiableStakingOutputs(
 	stakingAmount btcutil.Amount,
 	net *chaincfg.Params,
 ) (*IdentifiableStakingInfo, error) {
-	info, err := BuildStakingInfo(
+	info, err := BuildMintingInfo(
 		stakerKey,
 		[]*btcec.PublicKey{fpKey},
 		covenantKeys,
@@ -480,12 +489,11 @@ func ParseV0MintingTx(
 
 	// 3. Op return seems to be valid V0 op return output. Now, we need to check whether
 	// the staking output exists and is valid.
-	stakingInfo, err := BuildStakingInfo(
+	stakingInfo, err := BuildMintingInfo(
 		V0OpReturnData.StakerPublicKey.PubKey,
 		[]*btcec.PublicKey{V0OpReturnData.dAppPublicKey.PubKey},
 		covenantKeys,
 		covenantQuorum,
-		V0OpReturnData.StakingTime,
 		// we can pass 0 here, as staking amount is not used when creating taproot address
 		0,
 		net,

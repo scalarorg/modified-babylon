@@ -25,7 +25,7 @@ const (
 
 var (
 	unspendableKeyPathKey    = unspendableKeyPathInternalPubKeyInternal(unspendableKeyPath)
-	errBuildingStakingInfo   = fmt.Errorf("error building staking info")
+	errBuildingMintingInfo   = fmt.Errorf("error building staking info")
 	errBuildingUnbondingInfo = fmt.Errorf("error building unbonding info")
 	ErrDuplicatedKeyInScript = fmt.Errorf("duplicated key in script")
 )
@@ -183,23 +183,23 @@ func (t *taprootScriptHolder) taprootPkScript(net *chaincfg.Params) ([]byte, err
 // 1. Staker can spend after relative time lock - staking
 // 2. Staker can spend with covenat cooperation any time
 // 3. Staker can spend with finality provider and covenant cooperation any time.
-type StakingInfo struct {
-	StakingOutput         *wire.TxOut
-	scriptHolder          *taprootScriptHolder
-	timeLockPathLeafHash  chainhash.Hash
-	unbondingPathLeafHash chainhash.Hash
-	slashingPathLeafHash  chainhash.Hash
+type MintingInfo struct {
+	MintingOutput                 *wire.TxOut
+	scriptHolder                  *taprootScriptHolder
+	burnPathLeafHash              chainhash.Hash
+	slashingOrLostKeyPathLeafHash chainhash.Hash
+	burnWithoutDAppPathLeafHash   chainhash.Hash
 }
 
 // GetPkScript returns the full staking taproot pkscript in the corresponding staking tx
-func (sti *StakingInfo) GetPkScript() []byte {
-	return sti.StakingOutput.PkScript
+func (sti *MintingInfo) GetPkScript() []byte {
+	return sti.MintingOutput.PkScript
 }
 
 // GetOutputFetcher returns the fetcher of the staking tx's output
-func (sti *StakingInfo) GetOutputFetcher() *txscript.CannedPrevOutputFetcher {
+func (sti *MintingInfo) GetOutputFetcher() *txscript.CannedPrevOutputFetcher {
 	return txscript.NewCannedPrevOutputFetcher(
-		sti.GetPkScript(), sti.StakingOutput.Value,
+		sti.GetPkScript(), sti.MintingOutput.Value,
 	)
 }
 
@@ -256,18 +256,19 @@ func aggregateScripts(scripts ...[]byte) []byte {
 // babylonScriptPaths contains all possible babylon script paths
 // not every babylon output will contain all of those paths
 type babylonScriptPaths struct {
-	// timeLockPathScript is the script path for normal unbonding
-	// <Staker_PK> OP_CHECKSIGVERIFY  <Staking_Time_Blocks> OP_CHECKSEQUENCEVERIFY
-	timeLockPathScript []byte
-	// unbondingPathScript is the script path for on-demand early unbonding
-	// <Staker_PK> OP_CHECKSIGVERIFY
+	// burnPathScript is the script path for normal burning
+	// <Minter_PK> OP_CHECKSIGVERIFY
+	// <dApp_PK> OP_CHECKSIGVERIFY
 	// <Covenant_PK1> OP_CHECKSIG ... <Covenant_PKN> OP_CHECKSIGADD M OP_NUMEQUAL
-	unbondingPathScript []byte
-	// slashingPathScript is the script path for slashing
-	// <Staker_PK> OP_CHECKSIGVERIFY
-	// <FP_PK1> OP_CHECKSIG ... <FP_PKN> OP_CHECKSIGADD 1 OP_NUMEQUALVERIFY
-	// <Covenant_PK1> OP_CHECKSIG ... <Covenant_PKN> OP_CHECKSIGADD M OP_NUMEQUAL
-	slashingPathScript []byte
+	burnPathScript []byte
+	// slashingOrLostKeyPathScript is the script path for slashing or minter lost key
+	// <Minter_PK> OP_CHECKSIGVERIFY
+	// <Covenant_PK1> OP_CHECKSIG ... <Covenant_PKN> OP_CHECKSIGADD M OP_GREATERTHANOREQUAL
+	slashingOrLostKeyPathScript []byte
+	// burnWithoutDAppPathScript is the script path for burning without dApp
+	// <Minter_PK> OP_CHECKSIGVERIFY
+	// <Covenant_PK1> OP_CHECKSIG ... <Covenant_PKN> OP_CHECKSIGADD M OP_GREATERTHANOREQUAL
+	burnWithoutDAppPathScript []byte
 }
 
 func keyToString(key *btcec.PublicKey) string {
@@ -311,7 +312,6 @@ func newBabylonScriptPaths(
 	fpKeys []*btcec.PublicKey,
 	covenantKeys []*btcec.PublicKey,
 	covenantQuorum uint32,
-	lockTime uint16,
 ) (*babylonScriptPaths, error) {
 	if stakerKey == nil {
 		return nil, fmt.Errorf("staker key is nil")
@@ -321,11 +321,11 @@ func newBabylonScriptPaths(
 		return nil, fmt.Errorf("error building scripts: %w", err)
 	}
 
-	timeLockPathScript, err := buildTimeLockScript(stakerKey, lockTime)
+	// timeLockPathScript, err := buildTimeLockScript(stakerKey, lockTime)
 
-	if err != nil {
-		return nil, err
-	}
+	// if err != nil {
+	// return nil, err
+	// }
 
 	covenantMultisigScript, err := buildMultiSigScript(
 		covenantKeys,
@@ -346,7 +346,8 @@ func newBabylonScriptPaths(
 		return nil, err
 	}
 
-	fpMultisigScript, err := buildMultiSigScript(
+	// We inherit this code, we only need 1 dApp no more than 1
+	dAppMultisigScript, err := buildMultiSigScript(
 		fpKeys,
 		// we always require only one finality provider to sign
 		1,
@@ -358,61 +359,64 @@ func newBabylonScriptPaths(
 		return nil, err
 	}
 
-	unbondingPathScript := aggregateScripts(
+	burnPathScript := aggregateScripts(
 		stakerSigScript,
+		dAppMultisigScript,
 		covenantMultisigScript,
 	)
 
-	slashingPathScript := aggregateScripts(
+	slashingOrLostKeyPathScript := aggregateScripts(
+		dAppMultisigScript,
+		covenantMultisigScript,
+	)
+
+	burnWithoutDAppPathScript := aggregateScripts(
 		stakerSigScript,
-		fpMultisigScript,
 		covenantMultisigScript,
 	)
 
 	return &babylonScriptPaths{
-		timeLockPathScript:  timeLockPathScript,
-		unbondingPathScript: unbondingPathScript,
-		slashingPathScript:  slashingPathScript,
+		burnPathScript:              burnPathScript,
+		slashingOrLostKeyPathScript: slashingOrLostKeyPathScript,
+		burnWithoutDAppPathScript:   burnWithoutDAppPathScript,
 	}, nil
 }
 
-// BuildStakingInfo builds all Babylon specific BTC scripts that must
+// BuildMintingInfo builds all Babylon specific BTC scripts that must
 // be committed to in the staking output.
-// Returned `StakingInfo` object exposes methods to build spend info for each
+// Returned `MintingInfo` object exposes methods to build spend info for each
 // of the script spending paths which later must be included in the witness.
 // It is up to the caller to verify whether parameters provided to this function
 // obey parameters expected by Babylon chain.
-func BuildStakingInfo(
+func BuildMintingInfo(
 	stakerKey *btcec.PublicKey,
-	fpKeys []*btcec.PublicKey,
+	dAppKeys []*btcec.PublicKey,
 	covenantKeys []*btcec.PublicKey,
 	covenantQuorum uint32,
-	stakingTime uint16,
 	stakingAmount btcutil.Amount,
 	net *chaincfg.Params,
-) (*StakingInfo, error) {
+) (*MintingInfo, error) {
 	unspendableKeyPathKey := unspendableKeyPathInternalPubKey()
 
 	babylonScripts, err := newBabylonScriptPaths(
 		stakerKey,
-		fpKeys,
+		dAppKeys,
 		covenantKeys,
 		covenantQuorum,
-		stakingTime,
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", errBuildingStakingInfo, err)
+		return nil, fmt.Errorf("%s: %w", errBuildingMintingInfo, err)
 	}
 
 	var unbondingPaths [][]byte
-	unbondingPaths = append(unbondingPaths, babylonScripts.timeLockPathScript)
-	unbondingPaths = append(unbondingPaths, babylonScripts.unbondingPathScript)
-	unbondingPaths = append(unbondingPaths, babylonScripts.slashingPathScript)
+	unbondingPaths = append(unbondingPaths, babylonScripts.burnPathScript)
+	unbondingPaths = append(unbondingPaths, babylonScripts.slashingOrLostKeyPathScript)
+	unbondingPaths = append(unbondingPaths, babylonScripts.burnWithoutDAppPathScript)
 
-	timeLockLeafHash := txscript.NewBaseTapLeaf(babylonScripts.timeLockPathScript).TapHash()
-	unbondingPathLeafHash := txscript.NewBaseTapLeaf(babylonScripts.unbondingPathScript).TapHash()
-	slashingLeafHash := txscript.NewBaseTapLeaf(babylonScripts.slashingPathScript).TapHash()
+	burnPathLeafHash := txscript.NewBaseTapLeaf(babylonScripts.burnPathScript).TapHash()
+	slashingOrLostKeyPathLeafHash := txscript.NewBaseTapLeaf(babylonScripts.slashingOrLostKeyPathScript).TapHash()
+	burnWithoutDAppPathLeafHash := txscript.NewBaseTapLeaf(babylonScripts.burnWithoutDAppPathScript).TapHash()
 
 	sh, err := newTaprootScriptHolder(
 		&unspendableKeyPathKey,
@@ -420,36 +424,36 @@ func BuildStakingInfo(
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", errBuildingStakingInfo, err)
+		return nil, fmt.Errorf("%s: %w", errBuildingMintingInfo, err)
 	}
 
 	taprootPkScript, err := sh.taprootPkScript(net)
 
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", errBuildingStakingInfo, err)
+		return nil, fmt.Errorf("%s: %w", errBuildingMintingInfo, err)
 	}
 
-	stakingOutput := wire.NewTxOut(int64(stakingAmount), taprootPkScript)
+	mintingOutput := wire.NewTxOut(int64(stakingAmount), taprootPkScript)
 
-	return &StakingInfo{
-		StakingOutput:         stakingOutput,
-		scriptHolder:          sh,
-		timeLockPathLeafHash:  timeLockLeafHash,
-		unbondingPathLeafHash: unbondingPathLeafHash,
-		slashingPathLeafHash:  slashingLeafHash,
+	return &MintingInfo{
+		MintingOutput:                 mintingOutput,
+		scriptHolder:                  sh,
+		burnPathLeafHash:              burnPathLeafHash,
+		slashingOrLostKeyPathLeafHash: slashingOrLostKeyPathLeafHash,
+		burnWithoutDAppPathLeafHash:   burnWithoutDAppPathLeafHash,
 	}, nil
 }
 
-func (i *StakingInfo) TimeLockPathSpendInfo() (*SpendInfo, error) {
-	return i.scriptHolder.scriptSpendInfoByName(i.timeLockPathLeafHash)
+func (i *MintingInfo) BurnPathSpendInfo() (*SpendInfo, error) {
+	return i.scriptHolder.scriptSpendInfoByName(i.burnPathLeafHash)
 }
 
-func (i *StakingInfo) UnbondingPathSpendInfo() (*SpendInfo, error) {
-	return i.scriptHolder.scriptSpendInfoByName(i.unbondingPathLeafHash)
+func (i *MintingInfo) slashingOrLostKeyPathSpendInfo() (*SpendInfo, error) {
+	return i.scriptHolder.scriptSpendInfoByName(i.slashingOrLostKeyPathLeafHash)
 }
 
-func (i *StakingInfo) SlashingPathSpendInfo() (*SpendInfo, error) {
-	return i.scriptHolder.scriptSpendInfoByName(i.slashingPathLeafHash)
+func (i *MintingInfo) BurnWithoutDAppPathSpendInfo() (*SpendInfo, error) {
+	return i.scriptHolder.scriptSpendInfoByName(i.burnWithoutDAppPathLeafHash)
 }
 
 // Unbonding script has 2 spending paths:
