@@ -22,6 +22,12 @@ const (
 	V0OpReturnDataSize = 71
 
 	v0OpReturnCreationErrMsg = "cannot create V0 op_return data"
+
+	PayloadOpReturnDataSize          = 80
+	chainIdBytes                     = 8
+	ChainIdUserAddressBytes          = 20
+	ChainIdSmartContractAddressBytes = 20
+	AmountBytes                      = 32
 )
 
 type IdentifiableStakingInfo struct {
@@ -50,18 +56,23 @@ func uint16FromBytes(b []byte) (uint16, error) {
 // V0OpReturnData represents the data that is embedded in the OP_RETURN output
 // It marshalls to exactly 71 bytes
 type V0OpReturnData struct {
-	Tag                       []byte
-	Version                   byte
-	StakerPublicKey           *XonlyPubKey
-	FinalityProviderPublicKey *XonlyPubKey
-	StakingTime               uint16
+	Tag             []byte
+	Version         byte
+	StakerPublicKey *XonlyPubKey
+	dAppPublicKey   *XonlyPubKey
+}
+
+type PayloadOpReturnData struct {
+	ChainID                     []byte
+	ChainIdUserAddress          []byte
+	ChainIdSmartContractAddress []byte
+	Amount                      uint32
 }
 
 func NewV0OpReturnData(
 	tag []byte,
 	stakerPublicKey []byte,
-	finalityProviderPublicKey []byte,
-	stakingTime []byte,
+	dAppPublicKey []byte,
 ) (*V0OpReturnData, error) {
 	if len(tag) != TagLen {
 		return nil, fmt.Errorf("%s: invalid tag length: %d, expected: %d", v0OpReturnCreationErrMsg, len(tag), TagLen)
@@ -73,26 +84,41 @@ func NewV0OpReturnData(
 		return nil, fmt.Errorf("%s:invalid staker public key:%w", v0OpReturnCreationErrMsg, err)
 	}
 
-	fpKey, err := XOnlyPublicKeyFromBytes(finalityProviderPublicKey)
+	fpKey, err := XOnlyPublicKeyFromBytes(dAppPublicKey)
 
 	if err != nil {
-		return nil, fmt.Errorf("%s:invalid finality provider public key:%w", v0OpReturnCreationErrMsg, err)
+		return nil, fmt.Errorf("%s:invalid dApp public key:%w", v0OpReturnCreationErrMsg, err)
 	}
 
-	stakingTimeValue, err := uint16FromBytes(stakingTime)
+	return NewV0OpReturnDataFromParsed(tag, stakerKey.PubKey, fpKey.PubKey)
+}
 
-	if err != nil {
-		return nil, fmt.Errorf("%s:invalid staking time:%w", v0OpReturnCreationErrMsg, err)
+func NewPayloadOpReturnData(
+	chainID []byte,
+	chainIdUserAddress []byte,
+	chainIdSmartContractAddress []byte,
+	amount []byte,
+) (*PayloadOpReturnData, error) {
+	if len(chainID) != chainIdBytes {
+		return nil, fmt.Errorf("invalid chain id length: %d, expected: %d", len(chainID), chainIdBytes)
 	}
-
-	return NewV0OpReturnDataFromParsed(tag, stakerKey.PubKey, fpKey.PubKey, stakingTimeValue)
+	if len(chainIdUserAddress) != ChainIdUserAddressBytes {
+		return nil, fmt.Errorf("invalid chain id user address length: %d, expected: %d", len(chainIdUserAddress), ChainIdUserAddressBytes)
+	}
+	if len(chainIdSmartContractAddress) != ChainIdSmartContractAddressBytes {
+		return nil, fmt.Errorf("invalid chain id smart contract address length: %d, expected: %d", len(chainIdSmartContractAddress), ChainIdSmartContractAddressBytes)
+	}
+	if len(amount) != AmountBytes {
+		return nil, fmt.Errorf("invalid amount length: %d, expected: %d", len(amount), AmountBytes)
+	}
+	amount_uint32 := binary.BigEndian.Uint32(amount)
+	return NewPayloadOpReturnDataFromParsed(chainID, chainIdUserAddress, chainIdSmartContractAddress, amount_uint32)
 }
 
 func NewV0OpReturnDataFromParsed(
 	tag []byte,
 	stakerPublicKey *btcec.PublicKey,
-	finalityProviderPublicKey *btcec.PublicKey,
-	stakingTime uint16,
+	dAppPublicKey *btcec.PublicKey,
 ) (*V0OpReturnData, error) {
 	if len(tag) != TagLen {
 		return nil, fmt.Errorf("%s:invalid tag length: %d, expected: %d", v0OpReturnCreationErrMsg, len(tag), TagLen)
@@ -102,22 +128,35 @@ func NewV0OpReturnDataFromParsed(
 		return nil, fmt.Errorf("%s:nil staker public key", v0OpReturnCreationErrMsg)
 	}
 
-	if finalityProviderPublicKey == nil {
-		return nil, fmt.Errorf("%s: nil finality provider public key", v0OpReturnCreationErrMsg)
+	if dAppPublicKey == nil {
+		return nil, fmt.Errorf("%s: nil dApp public key", v0OpReturnCreationErrMsg)
 	}
 
 	return &V0OpReturnData{
-		Tag:                       tag,
-		Version:                   0,
-		StakerPublicKey:           &XonlyPubKey{stakerPublicKey},
-		FinalityProviderPublicKey: &XonlyPubKey{finalityProviderPublicKey},
-		StakingTime:               stakingTime,
+		Tag:             tag,
+		Version:         0,
+		StakerPublicKey: &XonlyPubKey{stakerPublicKey},
+		dAppPublicKey:   &XonlyPubKey{dAppPublicKey},
+	}, nil
+}
+
+func NewPayloadOpReturnDataFromParsed(
+	chainID []byte,
+	chainIdUserAddress []byte,
+	chainIdSmartContractAddress []byte,
+	Amount uint32,
+) (*PayloadOpReturnData, error) {
+	return &PayloadOpReturnData{
+		ChainID:                     chainID,
+		ChainIdUserAddress:          chainIdUserAddress,
+		ChainIdSmartContractAddress: chainIdSmartContractAddress,
+		Amount:                      Amount,
 	}, nil
 }
 
 func NewV0OpReturnDataFromBytes(b []byte) (*V0OpReturnData, error) {
 	if len(b) != V0OpReturnDataSize {
-		return nil, fmt.Errorf("invalid op return data length: %d, expected: %d", len(b), V0OpReturnDataSize)
+		return nil, fmt.Errorf("invalid v0 op return data length: %d, expected: %d", len(b), V0OpReturnDataSize)
 	}
 	tag := b[:TagLen]
 
@@ -128,9 +167,19 @@ func NewV0OpReturnDataFromBytes(b []byte) (*V0OpReturnData, error) {
 	}
 
 	stakerPublicKey := b[TagLen+1 : TagLen+1+schnorr.PubKeyBytesLen]
-	finalityProviderPublicKey := b[TagLen+1+schnorr.PubKeyBytesLen : TagLen+1+schnorr.PubKeyBytesLen*2]
-	stakingTime := b[TagLen+1+schnorr.PubKeyBytesLen*2:]
-	return NewV0OpReturnData(tag, stakerPublicKey, finalityProviderPublicKey, stakingTime)
+	dAppPublicKey := b[TagLen+1+schnorr.PubKeyBytesLen:]
+	return NewV0OpReturnData(tag, stakerPublicKey, dAppPublicKey)
+}
+
+func NewPayloadOpReturnDataFromBytes(b []byte) (*PayloadOpReturnData, error) {
+	if len(b) != PayloadOpReturnDataSize {
+		return nil, fmt.Errorf("invalid payload op return data length: %d, expected: %d", len(b), PayloadOpReturnDataSize)
+	}
+	chainID := b[:chainIdBytes]
+	chainIdUserAddress := b[chainIdBytes : chainIdBytes+ChainIdUserAddressBytes]
+	chainIdSmartContractAddress := b[chainIdBytes+ChainIdUserAddressBytes : chainIdBytes+ChainIdUserAddressBytes+ChainIdSmartContractAddressBytes]
+	amount := b[chainIdBytes+ChainIdUserAddressBytes+ChainIdSmartContractAddressBytes:]
+	return NewPayloadOpReturnData(chainID, chainIdUserAddress, chainIdSmartContractAddress, amount)
 }
 
 func getV0OpReturnBytes(out *wire.TxOut) ([]byte, error) {
@@ -152,14 +201,42 @@ func getV0OpReturnBytes(out *wire.TxOut) ([]byte, error) {
 	return out.PkScript[2:], nil
 }
 
+func getPayloadOPReturnBytes(out *wire.TxOut) ([]byte, error) {
+	if out == nil {
+		return nil, fmt.Errorf("nil tx output")
+	}
+
+	// We are adding `+3` as each op return has additional 3 for:
+	// 1. OP_RETURN opcode - which signalizes that data is provably unspendable
+	// 2. OP_PUSHDATA1 opcode - which pushes the next byte contains the number of bytes to be pushed onto the stack.
+	// 3. 0x50 - we define that in code is OP_80 which is the bytes number to be pushed onto the stack
+	if len(out.PkScript) != PayloadOpReturnDataSize+3 {
+		return nil, fmt.Errorf("invalid op return data length: %d, expected: %d", len(out.PkScript), PayloadOpReturnDataSize+3)
+	}
+	if !txscript.IsNullData(out.PkScript) {
+		return nil, fmt.Errorf("invalid op return script")
+	}
+	return out.PkScript[3:], nil
+}
+
 func NewV0OpReturnDataFromTxOutput(out *wire.TxOut) (*V0OpReturnData, error) {
 	data, err := getV0OpReturnBytes(out)
 
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse op return data: %w", err)
+		return nil, fmt.Errorf("cannot parse v0 op return data: %w", err)
 	}
 
 	return NewV0OpReturnDataFromBytes(data)
+}
+
+func NewPayloadOpReturnDataFromTxOutput(out *wire.TxOut) (*PayloadOpReturnData, error) {
+	data, err := getPayloadOPReturnBytes(out)
+
+	if err != nil {
+		return nil, fmt.Errorf("cannot parse payload op return data: %w", err)
+	}
+
+	return NewPayloadOpReturnDataFromBytes(data)
 }
 
 func (d *V0OpReturnData) Marshall() []byte {
@@ -339,10 +416,10 @@ func tryToGetStakingOutput(outputs []*wire.TxOut, stakingOutputPkScript []byte) 
 	return stakingOutput, stakingOutputIdx, nil
 }
 
-// ParseV0StakingTx takes a btc transaction and checks whether it is a staking transaction and if so parses it
+// ParseV0MintingTx takes a btc transaction and checks whether it is a staking transaction and if so parses it
 // for easy data retrieval.
 // It does all necessary checks to ensure that the transaction is valid staking transaction.
-func ParseV0StakingTx(
+func ParseV0MintingTx(
 	tx *wire.MsgTx,
 	expectedTag []byte,
 	covenantKeys []*btcec.PublicKey,
@@ -367,41 +444,48 @@ func ParseV0StakingTx(
 	}
 
 	// 2. Identify whether the transaction has expected shape
-	if len(tx.TxOut) < 2 {
-		return nil, fmt.Errorf("staking tx must have at least 2 outputs")
+	if len(tx.TxOut) < 3 {
+		return nil, fmt.Errorf("staking tx must have at least 3 outputs")
 	}
 
-	opReturnData, opReturnOutputIdx, err := tryToGetOpReturnDataFromOutputs(tx.TxOut)
+	// opReturnData, opReturnOutputIdx, err := tryToGetOpReturnDataFromOutputs(tx.TxOut)
+
+	V0OpReturnData, err := NewV0OpReturnDataFromTxOutput(tx.TxOut[1])
+	PayloadOpReturnData, err := NewPayloadOpReturnDataFromTxOutput(tx.TxOut[2])
 
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse staking transaction: %w", err)
 	}
 
-	if opReturnData == nil {
-		return nil, fmt.Errorf("transaction does not have expected op return output")
+	if V0OpReturnData == nil {
+		return nil, fmt.Errorf("transaction does not have expected v0 op return output")
+	}
+
+	if PayloadOpReturnData == nil {
+		return nil, fmt.Errorf("transaction does not have expected payload op return output")
 	}
 
 	// at this point we know that transaction has op return output which seems to match
 	// the expected shape. Check the tag and version.
-	if !bytes.Equal(opReturnData.Tag, expectedTag) {
+	if !bytes.Equal(V0OpReturnData.Tag, expectedTag) {
 		return nil, fmt.Errorf("unexpected tag: %s, expected: %s",
-			hex.EncodeToString(opReturnData.Tag),
+			hex.EncodeToString(V0OpReturnData.Tag),
 			hex.EncodeToString(expectedTag),
 		)
 	}
 
-	if opReturnData.Version != 0 {
-		return nil, fmt.Errorf("unexpcted version: %d, expected: %d", opReturnData.Version, 0)
+	if V0OpReturnData.Version != 0 {
+		return nil, fmt.Errorf("unexpcted version: %d, expected: %d", V0OpReturnData.Version, 0)
 	}
 
 	// 3. Op return seems to be valid V0 op return output. Now, we need to check whether
 	// the staking output exists and is valid.
 	stakingInfo, err := BuildStakingInfo(
-		opReturnData.StakerPublicKey.PubKey,
-		[]*btcec.PublicKey{opReturnData.FinalityProviderPublicKey.PubKey},
+		V0OpReturnData.StakerPublicKey.PubKey,
+		[]*btcec.PublicKey{V0OpReturnData.dAppPublicKey.PubKey},
 		covenantKeys,
 		covenantQuorum,
-		opReturnData.StakingTime,
+		V0OpReturnData.StakingTime,
 		// we can pass 0 here, as staking amount is not used when creating taproot address
 		0,
 		net,
@@ -430,51 +514,43 @@ func ParseV0StakingTx(
 	}, nil
 }
 
-// IsPossibleV0StakingTx checks whether transaction may be a valid staking transaction
+// IsPossibleV0MintingTx checks whether transaction may be a valid staking transaction
 // checks:
-// 1. Whether the transaction has at least 2 outputs
-// 2. have an op return output
-// 3. op return output has expected tag
+// 1. Whether the transaction has at least 3 outputs
+// 2. have an op return output at index 1,2
+// 3. op_return at index 1 have 69 bytes
+// 4. op_return at index 2 have 80 bytes
 // This function is much faster than ParseV0StakingTx, as it does not perform
 // all necessary checks.
-func IsPossibleV0StakingTx(tx *wire.MsgTx, expectedTag []byte) bool {
+func IsPossibleV0MintingTx(tx *wire.MsgTx, expectedTag []byte) bool {
 	if len(expectedTag) != TagLen {
 		return false
 	}
 
-	if len(tx.TxOut) < 2 {
+	if len(tx.TxOut) < 3 {
 		return false
 	}
 
-	var possibleStakingTx = false
-	for _, o := range tx.TxOut {
-		output := o
+	data, err := getV0OpReturnBytes(tx.TxOut[1])
 
-		data, err := getV0OpReturnBytes(output)
-
-		if err != nil {
-			// this is not an op return output recognized by Babylon, move forward
-			continue
-		}
-
-		if !bytes.Equal(data[:TagLen], expectedTag) {
-			// this is not the op return output we are looking for as tag do not match
-			continue
-		}
-
-		if data[TagLen] != 0 {
-			// this is not the v0 op return output
-			continue
-		}
-
-		if possibleStakingTx {
-			// this is second output that matches the tag, we do not allow for multiple op return outputs
-			// so this is not a valid staking transaction
-			return false
-		}
-
-		possibleStakingTx = true
+	if err != nil {
+		return false
 	}
 
-	return possibleStakingTx
+	if !bytes.Equal(data[:TagLen], expectedTag) {
+		// this is not the op return output we are looking for as tag do not match
+		return false
+	}
+
+	if data[TagLen] != 0 {
+		// this is not the v0 op return output
+		return false
+	}
+	data, err = getPayloadOPReturnBytes(tx.TxOut[2])
+
+	if err != nil {
+		return false
+	}
+
+	return true
 }
