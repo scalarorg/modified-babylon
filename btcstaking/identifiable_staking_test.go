@@ -5,12 +5,13 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/babylonchain/babylon/btcstaking"
+	// "github.com/babylonchain/babylon/btcstaking"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/scalarog/modified-babylon/btcstaking"
 	"github.com/stretchr/testify/require"
 
 	"github.com/babylonchain/babylon/testutil/datagen"
