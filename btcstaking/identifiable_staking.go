@@ -19,9 +19,20 @@ const (
 	// length of tag prefix indentifying staking transactions
 	TagLen = 4
 	// 4 bytes tag + 1 byte version + 32 bytes staker public key + 32 bytes finality provider public key + 2 bytes staking time
-	V0OpReturnDataSize = 71
+	// V0OpReturnDataSize = 71
+
+	// With our minting transaction, we don't need staking time
+	V0OpReturnDataSize = 69
 
 	v0OpReturnCreationErrMsg = "cannot create V0 op_return data"
+
+	PayloadOpReturnDataSize          = 80
+	chainIdBytes                     = 8
+	ChainIdUserAddressBytes          = 20
+	ChainIdSmartContractAddressBytes = 20
+	AmountBytes                      = 32
+
+	payloadOpReturnCreationErrMsg = "cannot create payload op_return data"
 )
 
 type IdentifiableStakingInfo struct {
@@ -76,13 +87,22 @@ func NewV0OpReturnData(
 	fpKey, err := XOnlyPublicKeyFromBytes(finalityProviderPublicKey)
 
 	if err != nil {
-		return nil, fmt.Errorf("%s:invalid finality provider public key:%w", v0OpReturnCreationErrMsg, err)
+		return nil, fmt.Errorf("%s:invalid dApp public key:%w", v0OpReturnCreationErrMsg, err)
 	}
 
-	stakingTimeValue, err := uint16FromBytes(stakingTime)
+	// We don't need staking time
+
+	// stakingTimeValue, err := uint16FromBytes(stakingTime)
+
+	// if err != nil {
+	// 	return nil, fmt.Errorf("%s:invalid staking time:%w", v0OpReturnCreationErrMsg, err)
+	// }
+
+	// Create sample staking time
+	stakingTimeValue, err := uint16FromBytes([]byte{0x00, 0x00})
 
 	if err != nil {
-		return nil, fmt.Errorf("%s:invalid staking time:%w", v0OpReturnCreationErrMsg, err)
+		return nil, fmt.Errorf("%s:invalid sample staking time:%w", v0OpReturnCreationErrMsg, err)
 	}
 
 	return NewV0OpReturnDataFromParsed(tag, stakerKey.PubKey, fpKey.PubKey, stakingTimeValue)
@@ -103,7 +123,7 @@ func NewV0OpReturnDataFromParsed(
 	}
 
 	if finalityProviderPublicKey == nil {
-		return nil, fmt.Errorf("%s: nil finality provider public key", v0OpReturnCreationErrMsg)
+		return nil, fmt.Errorf("%s: nil dApp public key", v0OpReturnCreationErrMsg)
 	}
 
 	return &V0OpReturnData{
@@ -117,14 +137,14 @@ func NewV0OpReturnDataFromParsed(
 
 func NewV0OpReturnDataFromBytes(b []byte) (*V0OpReturnData, error) {
 	if len(b) != V0OpReturnDataSize {
-		return nil, fmt.Errorf("invalid op return data length: %d, expected: %d", len(b), V0OpReturnDataSize)
+		return nil, fmt.Errorf("invalid v0 op return data length: %d, expected: %d", len(b), V0OpReturnDataSize)
 	}
 	tag := b[:TagLen]
 
 	version := b[TagLen]
 
 	if version != 0 {
-		return nil, fmt.Errorf("invalid op return version: %d, expected: %d", version, 0)
+		return nil, fmt.Errorf("invalid v0 op return version: %d, expected: %d", version, 0)
 	}
 
 	stakerPublicKey := b[TagLen+1 : TagLen+1+schnorr.PubKeyBytesLen]
@@ -141,12 +161,13 @@ func getV0OpReturnBytes(out *wire.TxOut) ([]byte, error) {
 	// We are adding `+2` as each op return has additional 2 for:
 	// 1. OP_RETURN opcode - which signalizes that data is provably unspendable
 	// 2. OP_DATA_71 opcode - which pushes 71 bytes of data to the stack
+	// Note: In minting case, that was OP_DATA_69
 	if len(out.PkScript) != V0OpReturnDataSize+2 {
-		return nil, fmt.Errorf("invalid op return data length: %d, expected: %d", len(out.PkScript), V0OpReturnDataSize+2)
+		return nil, fmt.Errorf("invalid v0 op return data length: %d, expected: %d", len(out.PkScript), V0OpReturnDataSize+2)
 	}
 
 	if !txscript.IsNullData(out.PkScript) {
-		return nil, fmt.Errorf("invalid op return script")
+		return nil, fmt.Errorf("invalid v0 op return script")
 	}
 
 	return out.PkScript[2:], nil
@@ -156,7 +177,7 @@ func NewV0OpReturnDataFromTxOutput(out *wire.TxOut) (*V0OpReturnData, error) {
 	data, err := getV0OpReturnBytes(out)
 
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse op return data: %w", err)
+		return nil, fmt.Errorf("cannot parse v0 op return data: %w", err)
 	}
 
 	return NewV0OpReturnDataFromBytes(data)
@@ -168,7 +189,7 @@ func (d *V0OpReturnData) Marshall() []byte {
 	data = append(data, d.Version)
 	data = append(data, d.StakerPublicKey.Marshall()...)
 	data = append(data, d.FinalityProviderPublicKey.Marshall()...)
-	data = append(data, uint16ToBytes(d.StakingTime)...)
+	// data = append(data, uint16ToBytes(d.StakingTime)...)
 	return data
 }
 
